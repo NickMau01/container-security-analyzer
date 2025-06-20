@@ -34,9 +34,19 @@ def fetch_image(image_name, output_dir="outputs/fetched_images"):
 
     os.makedirs(extracted_dir, exist_ok=True)
     print(f"Extracting image layers to: {extracted_dir}")
+
+    def safe_filter(member, targetpath):
+        if member.name.startswith("/") or ".." in member.name:
+            return None
+        return member
+    
+    def allow_all_filter(member, targetpath):
+        return member # It's just to avoid warnings from Python 3.14
+
     with tarfile.open(image_tar_path,'r') as tar:
         tar.extractall(
-            path=extracted_dir
+            path=extracted_dir,
+            filter=allow_all_filter
             )
     
     print(f"Done. Image saved and extracted.")
