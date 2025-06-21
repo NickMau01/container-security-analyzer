@@ -4,7 +4,7 @@ import tarfile
 import stat
 import shutil
 
-def fetch_image(image_name, output_dir="outputs/fetched_images"):
+def fetch_image(image_name, output_dir="outputs/fetched_images", safe_mode=True):
     client = docker.from_env()
 
     # Image pull
@@ -42,11 +42,13 @@ def fetch_image(image_name, output_dir="outputs/fetched_images"):
     
     def allow_all_filter(member, targetpath):
         return member # It's just to avoid warnings from Python 3.14
+    
+    filter_to_use = safe_filter if safe_mode else allow_all_filter
 
     with tarfile.open(image_tar_path,'r') as tar:
         tar.extractall(
             path=extracted_dir,
-            filter=allow_all_filter
+            filter=filter_to_use
             )
     
     print(f"Done. Image saved and extracted.")
