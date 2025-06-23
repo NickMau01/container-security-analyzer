@@ -1,8 +1,15 @@
 import subprocess
 import json
+import os
 
-def scan_docker_image(image_name, output_file="vulns_docker.json"):
+def scan_docker_image(image_name, output_dir = "outputs/scanner_reports"):
     print(f"Scanning Docker image: {image_name}")
+
+    # Creating output directory
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Construct output file name
+    output_file = os.path.join(output_dir,image_name.replace("/","_").replace(":","_") + ".json")
     
     # Runs the Trivy command to scan the image into JSON format and save the result to file
     result = subprocess.run([
@@ -35,4 +42,4 @@ def scan_docker_image(image_name, output_file="vulns_docker.json"):
     return data
 
 if __name__ == "__main__":
-    scan_docker_image("nginx:latest")
+    scan_docker_image("vulnerables/web-dvwa")
