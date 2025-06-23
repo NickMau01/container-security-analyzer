@@ -3,8 +3,9 @@ import os
 import tarfile
 import stat
 import shutil
+import argparse
 
-def fetch_image(image_name, output_dir="outputs/fetched_images", safe_mode=True):
+def fetch_image(image_name, output_dir="outputs/fetched_images", safe_mode=False):
     client = docker.from_env()
 
     # Image pull
@@ -58,4 +59,8 @@ def fetch_image(image_name, output_dir="outputs/fetched_images", safe_mode=True)
     }
 
 if __name__ == "__main__":
-    fetch_image("nginx:latest")
+    parser = argparse.ArgumentParser(description="Fetch and extract a Docker image.")
+    parser.add_argument("image", help="Docker image name (e.g. nginx:latest)")
+    parser.add_argument("--safe", action="store_true", help="Use safe mode for tar extraction")
+    args = parser.parse_args()
+    fetch_image(args.image, safe_mode=args.safe)
