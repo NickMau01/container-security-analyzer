@@ -28,7 +28,7 @@ def scan_docker_image(image_name, output_dir = "outputs/scanner_reports"):
     
     # Try to upload the JSON file to parse its contents
     try:
-        with open(output_file) as f:
+        with open(output_file, "r", encoding="utf-8", errors="replace") as f:
             data = json.load(f)
     except Exception as e:
         print(f"Error reading/parsing JSON file: {e}")

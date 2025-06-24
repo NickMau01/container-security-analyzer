@@ -12,3 +12,9 @@ if __name__ == "__main__":
 
     print("\n=== Scanning vulnerables/web-dvwa ===")
     scan_docker_image("vulnerables/web-dvwa")
+
+    print("\n=== Scanning centos:7 ===")
+    scan_docker_image("centos:7")
+
+    print("\n=== Scanning php:8.1-fpm ===")
+    scan_docker_image("php:8.1-fpm")
