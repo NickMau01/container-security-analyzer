@@ -1,0 +1,23 @@
+[
+  "CVSS",
+  "CweIDs",
+  "DataSource",
+  "Description",
+  "FixedVersion",
+  "InstalledVersion",
+  "LastModifiedDate",
+  "Layer",
+  "PkgID",
+  "PkgIdentifier",
+  "PkgName",
+  "PrimaryURL",
+  "PublishedDate",
+  "References",
+  "Severity",
+  "SeveritySource",
+  "Status",
+  "Title",
+  "VendorIDs",
+  "VendorSeverity",
+  "VulnerabilityID"
+]

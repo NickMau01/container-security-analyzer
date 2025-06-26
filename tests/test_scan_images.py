@@ -1,20 +1,18 @@
 from scanner.docker_scanner import scan_docker_image
+from contextlib import redirect_stdout, redirect_stderr
 
 if __name__ == "__main__":
-    print("\n=== Scanning nginx:latest ===")
-    scan_docker_image("nginx:latest")
+    images = [
+        "nginx:latest",
+        "python:3.13-alpine",
+        "alpine:3.16",
+        "vulnerables/web-dvwa",
+        "centos:7",
+        "php:8.1-fpm",
+    ]
 
-    print("\n=== Scanning python:3.13-alpine ===")
-    scan_docker_image("python:3.13-alpine")
-
-    print("\n=== Scanning alpine:3.16 ===")
-    scan_docker_image("alpine:3.16")
-
-    print("\n=== Scanning vulnerables/web-dvwa ===")
-    scan_docker_image("vulnerables/web-dvwa")
-
-    print("\n=== Scanning centos:7 ===")
-    scan_docker_image("centos:7")
-
-    print("\n=== Scanning php:8.1-fpm ===")
-    scan_docker_image("php:8.1-fpm")
+    with open("outputs/scanner_reports/scan_report.txt", "w", encoding="utf-8") as log:
+         with redirect_stdout(log), redirect_stderr(log):
+            for img in images:
+                print(f"\n=== Scanning {img} ===")
+                scan_docker_image(img)
