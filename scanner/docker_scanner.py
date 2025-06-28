@@ -67,6 +67,11 @@ def scan_docker_image(image_name, output_dir = "outputs/scanner_reports", fields
     # Creating output directory
     os.makedirs(output_dir, exist_ok=True)
 
+    # Create subdirectory for this image
+    image_folder_name = image_name.replace("/", "_").replace(":", "_")
+    output_dir = os.path.join(output_dir, image_folder_name)
+    os.makedirs(output_dir, exist_ok=True)
+
     # Dynamically create log file based on image name
     log_file = os.path.join(output_dir,f"log_scan_report_{image_name.replace('/', '_').replace(':', '_')}.txt")
 
@@ -170,7 +175,7 @@ def prepare_vulnerability_dataframe(data):
     return df, image_name
 
 # Export report to Markdown format, both flat and grouped by package
-def save_markdown_report(df, image_name, output_dir="outputs/scanner_reports"):
+def save_markdown_report(df, image_name, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     flat_name = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_flat.md")
     grouped_name = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_by_package.md")
@@ -198,7 +203,7 @@ def save_markdown_report(df, image_name, output_dir="outputs/scanner_reports"):
     print(f"Markdown reports saved to {flat_name} and {grouped_name}")
 
 # Save DataFrame to CSV
-def save_csv_report(df, image_name, output_dir="outputs/scanner_reports"):
+def save_csv_report(df, image_name, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     csv_path = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_flat.csv")
     df.to_csv(csv_path, index=False)
@@ -210,5 +215,6 @@ if __name__ == "__main__":
     if report:
         df, image = prepare_vulnerability_dataframe(report)
         if df is not None:
-            save_markdown_report(df, image)
-            save_csv_report(df, image)
+            image_folder = os.path.join("outputs/scanner_reports", image.replace("/", "_").replace(":", "_"))
+            save_markdown_report(df, image, output_dir=image_folder)
+            save_csv_report(df, image, output_dir=image_folder)
