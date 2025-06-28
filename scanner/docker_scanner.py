@@ -2,6 +2,7 @@ import subprocess
 import json
 import os
 import shutil
+import pandas as pd
 from contextlib import redirect_stdout, redirect_stderr
 
 # Extract all unique vulnerability field names from a Trivy report
@@ -138,6 +139,76 @@ def scan_docker_image(image_name, output_dir = "outputs/scanner_reports", fields
     # Returns the full contents of the JSON for future use
     return data
 
+# Convert Trivy report into a pandas DataFrame, ordered by severity and CVSS
+def prepare_vulnerability_dataframe(data):
+    findings = []
+    image_name = data.get("ArtifactName", "unknown")
+    for result in data.get("Results", []):
+        for vuln in result.get("Vulnerabilities", []):
+            findings.append({
+                "VulnerabilityID": vuln.get("VulnerabilityID", ""),
+                "PkgName": vuln.get("PkgName", ""),
+                "InstalledVersion": vuln.get("InstalledVersion", ""),
+                "Severity": vuln.get("Severity", ""),
+                "FixedVersion": vuln.get("FixedVersion", "-"),
+                "CVSS": vuln.get("CVSS", {}).get("nvd", {}).get("V3Score", "")
+            })
+
+    if not findings:
+        print("No vulnerabilities found.")
+        return None, image_name
+
+    df = pd.DataFrame(findings)
+
+    # Order vulnerabilities by severity, then by descending CVSS score
+    severity_order = {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4, "UNKNOWN": 5}
+    df["SeverityRank"] = df["Severity"].str.upper().map(severity_order).fillna(6)
+    df["CVSS_Score"] = pd.to_numeric(df["CVSS"], errors="coerce").fillna(-1)
+    df.sort_values(["SeverityRank", "CVSS_Score"], ascending=[True, False], inplace=True)
+    df.drop(columns=["SeverityRank", "CVSS_Score"], inplace=True)
+
+    return df, image_name
+
+# Export report to Markdown format, both flat and grouped by package
+def save_markdown_report(df, image_name, output_dir="outputs/scanner_reports"):
+    os.makedirs(output_dir, exist_ok=True)
+    flat_name = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_flat.md")
+    grouped_name = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_by_package.md")
+    
+    severity_counts = df["Severity"].str.upper().value_counts().to_dict()
+    total = sum(severity_counts.values())
+    summary_line = f"Total vulnerabilities: {total} " + "(" + ", ".join([f"{k.capitalize()}: {v}" for k, v in sorted(severity_counts.items(), key=lambda x: ['CRITICAL','HIGH','MEDIUM','LOW','UNKNOWN'].index(x[0]))]) + ")"
+
+    # Flat report
+    with open(flat_name, "w", encoding="utf-8") as f:
+        f.write(f"# Vulnerability Report for `{image_name}` (Flat View)\n\n")
+        f.write(summary_line + "\n\n")
+        f.write(df.to_markdown(index=False))
+    
+    # Grouped report
+    with open(grouped_name, "w", encoding="utf-8") as f:
+        f.write(f"# Vulnerability Report for `{image_name}` (Grouped by Package)\n\n")
+        f.write(summary_line + "\n\n")
+        for pkg in df["PkgName"].unique():
+            subset = df[df["PkgName"] == pkg]
+            f.write(f"## Package: `{pkg}`\n\n")
+            f.write(subset.drop(columns=["PkgName"]).to_markdown(index=False))
+            f.write("\n\n")
+    
+    print(f"Markdown reports saved to {flat_name} and {grouped_name}")
+
+# Save DataFrame to CSV
+def save_csv_report(df, image_name, output_dir="outputs/scanner_reports"):
+    os.makedirs(output_dir, exist_ok=True)
+    csv_path = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_flat.csv")
+    df.to_csv(csv_path, index=False)
+    print(f"CSV report saved to {csv_path}")
+
 if __name__ == "__main__":
     # Open a log file and redirect both stdout and stderr
-    scan_docker_image("vulnerables/web-dvwa")
+    report = scan_docker_image("vulnerables/web-dvwa")
+    if report:
+        df, image = prepare_vulnerability_dataframe(report)
+        if df is not None:
+            save_markdown_report(df, image)
+            save_csv_report(df, image)
