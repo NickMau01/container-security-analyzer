@@ -1,4 +1,5 @@
-from scanner.docker_scanner import scan_docker_image
+import os
+from scanner.docker_scanner import scan_docker_image, prepare_vulnerability_dataframe, save_markdown_report, save_csv_report
 from contextlib import redirect_stdout, redirect_stderr
 
 if __name__ == "__main__":
@@ -15,4 +16,10 @@ if __name__ == "__main__":
          with redirect_stdout(log), redirect_stderr(log):
             for img in images:
                 print(f"\n=== Scanning {img} ===")
-                scan_docker_image(img)
+                report = scan_docker_image(img)
+                if report:
+                    df, image = prepare_vulnerability_dataframe(report)
+                    if df is not None:
+                        image_folder = os.path.join("outputs/scanner_reports", image.replace("/", "_").replace(":", "_"))
+                        save_markdown_report(df, image, output_dir=image_folder)
+                        save_csv_report(df, image, output_dir=image_folder)
