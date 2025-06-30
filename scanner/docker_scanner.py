@@ -4,6 +4,7 @@ import os
 import shutil
 import pandas as pd
 from contextlib import redirect_stdout, redirect_stderr
+from collections import defaultdict
 
 # Extract all unique vulnerability field names from a Trivy report
 def extract_vuln_fields(data):
@@ -59,6 +60,7 @@ def report_missing_by_vuln(data):
         for vid, missing in missing_details:
             print(f"  • {vid}: missing {len(missing)} fields: {', '.join(sorted(missing))}")
 
+# Perform a Trivy vulnerability scan on a Docker image
 def scan_docker_image(image_name, output_dir = "outputs/scanner_reports", fields_file="scanner/expected_fields.json"):
     if not shutil.which("trivy"):
         print("Error: Trivy is not installed or is not in your PATH")
@@ -209,6 +211,56 @@ def save_csv_report(df, image_name, output_dir):
     df.to_csv(csv_path, index=False)
     print(f"CSV report saved to {csv_path}")
 
+# Generate a report on how many CVEs affect multiple packages
+def report_cve_package_distribution(data, output_dir="outputs/scanner_reports", image_name="report"):
+    os.makedirs(output_dir, exist_ok=True)
+    report_path = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_cve_package_distribution.md")
+
+    # Build CVE-to-package mapping
+    cve_map = defaultdict(set)
+
+    for result in data.get("Results", []):
+        for vuln in result.get("Vulnerabilities", []):
+            cve = vuln.get("VulnerabilityID")
+            pkg = vuln.get("PkgName")
+            if cve and pkg:
+                cve_map[cve].add(pkg)
+
+    # Split CVEs into multi-package and single-package
+    multi_pkg_cves = {cve: pkgs for cve, pkgs in cve_map.items() if len(pkgs) > 1}
+    single_pkg_cves = {cve for cve, pkgs in cve_map.items() if len(pkgs) == 1}
+
+    # Prepare DataFrame for summary table
+    df_summary = pd.DataFrame(
+        sorted(
+            [(cve, len(pkgs)) for cve, pkgs in multi_pkg_cves.items()],
+            key=lambda x: x[1],
+            reverse=True
+        ),
+        columns=["CVE ID", "# Packages"]
+    )
+
+    # Write Markdown report
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(f"# CVE-to-Package Report for `{image_name}`\n\n")
+
+        f.write("## Summary\n")
+        f.write(f"- Total unique CVEs: **{len(cve_map)}**\n")
+        f.write(f"- CVEs affecting more than one package: **{len(multi_pkg_cves)}**\n")
+        f.write(f"- CVEs affecting only one package: **{len(single_pkg_cves)}**\n\n")
+        f.write("---\n\n")
+
+        f.write("## CVEs affecting multiple packages (summary table)\n\n")
+        f.write(df_summary.to_markdown(index=False))
+        f.write("\n\n---\n\n")
+
+        f.write("## Detailed package list per CVE\n\n")
+        for cve, pkgs in sorted(multi_pkg_cves.items(), key=lambda x: len(x[1]), reverse=True):
+            pkg_list = ", ".join(sorted(pkgs))
+            f.write(f"- **{cve}** → {len(pkgs)} packages\n  `{pkg_list}`\n\n")
+
+    print(f"Report saved to: {report_path}")
+
 if __name__ == "__main__":
     # Open a log file and redirect both stdout and stderr
     report = scan_docker_image("vulnerables/web-dvwa")
@@ -218,3 +270,4 @@ if __name__ == "__main__":
             image_folder = os.path.join("outputs/scanner_reports", image.replace("/", "_").replace(":", "_"))
             save_markdown_report(df, image, output_dir=image_folder)
             save_csv_report(df, image, output_dir=image_folder)
+            report_cve_package_distribution(report, output_dir=image_folder, image_name=image)
