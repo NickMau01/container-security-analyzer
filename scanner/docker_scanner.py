@@ -6,6 +6,13 @@ import pandas as pd
 from contextlib import redirect_stdout, redirect_stderr
 from collections import defaultdict
 
+def get_output_dir(image_name, tool_name):
+    """
+    Generate output directory path based on image name and tool name (Trivy or Grype).
+    """
+    sanitized_image_name = image_name.replace("/", "_").replace(":", "_")
+    return os.path.join("outputs", "scanner_reports", sanitized_image_name, tool_name)
+
 # Extract all unique vulnerability field names from a Trivy report
 def extract_vuln_fields(data):
     fields = set()
@@ -61,7 +68,7 @@ def report_missing_by_vuln(data):
             print(f"  • {vid}: missing {len(missing)} fields: {', '.join(sorted(missing))}")
 
 # Perform a Trivy vulnerability scan on a Docker image
-def scan_docker_image(image_name, output_dir = "outputs/scanner_reports", fields_file="scanner/expected_fields.json"):
+def scan_docker_image(image_name, output_dir, fields_file="scanner/expected_fields.json"):
     if not shutil.which("trivy"):
         print("Error: Trivy is not installed or is not in your PATH")
         return None
@@ -71,11 +78,9 @@ def scan_docker_image(image_name, output_dir = "outputs/scanner_reports", fields
 
     # Create subdirectory for this image
     image_folder_name = image_name.replace("/", "_").replace(":", "_")
-    output_dir = os.path.join(output_dir, image_folder_name)
-    os.makedirs(output_dir, exist_ok=True)
 
     # Dynamically create log file based on image name
-    log_file = os.path.join(output_dir,f"log_scan_report_{image_name.replace('/', '_').replace(':', '_')}.txt")
+    log_file = os.path.join(output_dir,f"log_scan_report_{image_folder_name}_trivy.txt")
 
     data = None
     with open(log_file, "w", encoding="utf-8") as log:
@@ -83,7 +88,7 @@ def scan_docker_image(image_name, output_dir = "outputs/scanner_reports", fields
             print(f"Scanning Docker image: {image_name}")
 
             # Construct output file name
-            output_file = os.path.join(output_dir,image_name.replace("/","_").replace(":","_") + ".json")
+            output_file = os.path.join(output_dir,image_name.replace("/","_").replace(":","_") + "_trivy.json")
             
             # Runs the Trivy command to scan the image into JSON format and save the result to file
             result = subprocess.run([
@@ -179,8 +184,8 @@ def prepare_vulnerability_dataframe(data):
 # Export report to Markdown format, both flat and grouped by package
 def save_markdown_report(df, image_name, output_dir):
     os.makedirs(output_dir, exist_ok=True)
-    flat_name = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_flat.md")
-    grouped_name = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_by_package.md")
+    flat_name = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_flat_trivy.md")
+    grouped_name = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_by_package_trivy.md")
     
     severity_counts = df["Severity"].str.upper().value_counts().to_dict()
     total = sum(severity_counts.values())
@@ -205,16 +210,16 @@ def save_markdown_report(df, image_name, output_dir):
     print(f"Markdown reports saved to {flat_name} and {grouped_name}")
 
 # Save DataFrame to CSV
-def save_csv_report(df, image_name, output_dir):
+def save_csv_report(df, image_name, output_dir, scanner_name):
     os.makedirs(output_dir, exist_ok=True)
-    csv_path = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_flat.csv")
+    csv_path = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_flat_{scanner_name}.csv")
     df.to_csv(csv_path, index=False)
     print(f"CSV report saved to {csv_path}")
 
 # Generate a report on how many CVEs affect multiple packages
 def report_cve_package_distribution(data, output_dir="outputs/scanner_reports", image_name="report"):
     os.makedirs(output_dir, exist_ok=True)
-    report_path = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_cve_package_distribution.md")
+    report_path = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_cve_package_distribution_trivy.md")
 
     # Build CVE-to-package mapping
     cve_map = defaultdict(set)
@@ -344,8 +349,8 @@ def prepare_grype_dataframe(grype_data):
 # Save the Grype vulnerability report to Markdown format
 def save_grype_markdown_report(df, image_name, output_dir):
     os.makedirs(output_dir, exist_ok=True)
-    flat_name = os.path.join(output_dir, f"{image_name}_grype_flat.md")
-    grouped_name = os.path.join(output_dir, f"{image_name}_grype_by_package.md")
+    flat_name = os.path.join(output_dir, f"{image_name}_flat_grype.md")
+    grouped_name = os.path.join(output_dir, f"{image_name}_by_package_grype.md")
 
     severity_counts = df["Severity"].str.upper().value_counts().to_dict()
     total = sum(severity_counts.values())
@@ -377,7 +382,7 @@ def save_grype_markdown_report(df, image_name, output_dir):
 # Generate a Markdown report on CVEs affecting multiple packages (Grype scan)
 def report_grype_cve_package_distribution(grype_data, output_dir="outputs/scanner_reports", image_name="report"):
     os.makedirs(output_dir, exist_ok=True)
-    report_path = os.path.join(output_dir, f"{image_name}_grype_cve_package_distribution.md")
+    report_path = os.path.join(output_dir, f"{image_name}_cve_package_distribution_grype.md")
 
     cve_map = defaultdict(set)
 
@@ -423,24 +428,27 @@ def report_grype_cve_package_distribution(grype_data, output_dir="outputs/scanne
 
 if __name__ == "__main__":
     image = "vulnerables/web-dvwa"
-    image_folder = os.path.join("outputs/scanner_reports", image.replace("/", "_").replace(":", "_"))
+
+    # Generate paths for each scanner
+    trivy_output_dir = get_output_dir(image, "Trivy")
+    grype_output_dir = get_output_dir(image, "Grype")
 
     # Trivy
-    trivy_data = scan_docker_image(image)
+    trivy_data = scan_docker_image(image,trivy_output_dir)
     if trivy_data:
         df_trivy, image_name = prepare_vulnerability_dataframe(trivy_data)
         if df_trivy is not None:
-            image_folder = os.path.join("outputs/scanner_reports", image.replace("/", "_").replace(":", "_"))
-            save_markdown_report(df_trivy, image_name, output_dir=image_folder)
-            save_csv_report(df_trivy, image_name, output_dir=image_folder)
-            report_cve_package_distribution(trivy_data, output_dir=image_folder, image_name=image)
+            save_markdown_report(df_trivy, image_name, output_dir=trivy_output_dir)
+            save_csv_report(df_trivy, image_name, trivy_output_dir,"trivy")
+            report_cve_package_distribution(trivy_data, output_dir=trivy_output_dir, image_name=image_name)
     
     # Grype
-    grype_data = run_grype_scan(image, image_folder)
+    grype_data = run_grype_scan(image, grype_output_dir)
     if grype_data:
         df_grype, grype_image_name = prepare_grype_dataframe(grype_data)
         if df_grype is not None:
             sanitized_grype_image_name = grype_image_name.replace("/", "_").replace(":", "_")
-            save_grype_markdown_report(df_grype, sanitized_grype_image_name, output_dir=image_folder)
-            save_csv_report(df_grype, sanitized_grype_image_name + "_grype", output_dir=image_folder)
-            report_grype_cve_package_distribution(grype_data, output_dir=image_folder, image_name=sanitized_grype_image_name)
+            save_grype_markdown_report(df_grype, sanitized_grype_image_name, output_dir=grype_output_dir)
+            save_csv_report(df_grype, sanitized_grype_image_name, grype_output_dir, "grype")
+            report_grype_cve_package_distribution(grype_data, output_dir=grype_output_dir, image_name=sanitized_grype_image_name)
+            
