@@ -2,6 +2,7 @@ import subprocess
 import json
 import os
 import shutil
+import csv
 import pandas as pd
 from contextlib import redirect_stdout, redirect_stderr
 from collections import defaultdict
@@ -22,7 +23,7 @@ def extract_vuln_fields(data):
     return fields
 
 # Print per-field, per-CVE missingness
-def report_missing_details(data, fields,vuln_count):
+def report_missing_details(data, fields, vuln_count):
     missing_map = { f: [] for f in fields }
     for result in data.get("Results", []):
         for vuln in result.get("Vulnerabilities", []):
@@ -70,7 +71,7 @@ def report_missing_by_vuln(data):
 # Perform a Trivy vulnerability scan on a Docker image
 def scan_docker_image(image_name, output_dir, fields_file="scanner/expected_fields.json"):
     if not shutil.which("trivy"):
-        print("Error: Trivy is not installed or is not in your PATH")
+        print("Error: Trivy is not installed or is not in PATH")
         return None
 
     # Creating output directory
@@ -80,7 +81,7 @@ def scan_docker_image(image_name, output_dir, fields_file="scanner/expected_fiel
     image_folder_name = image_name.replace("/", "_").replace(":", "_")
 
     # Dynamically create log file based on image name
-    log_file = os.path.join(output_dir,f"log_scan_report_{image_folder_name}_trivy.txt")
+    log_file = os.path.join(output_dir, f"log_scan_report_{image_folder_name}_trivy.txt")
 
     data = None
     with open(log_file, "w", encoding="utf-8") as log:
@@ -88,7 +89,7 @@ def scan_docker_image(image_name, output_dir, fields_file="scanner/expected_fiel
             print(f"Scanning Docker image: {image_name}")
 
             # Construct output file name
-            output_file = os.path.join(output_dir,image_name.replace("/","_").replace(":","_") + "_trivy.json")
+            output_file = os.path.join(output_dir, f"{image_folder_name}_trivy.json")
             
             # Runs the Trivy command to scan the image into JSON format and save the result to file
             result = subprocess.run([
@@ -100,7 +101,7 @@ def scan_docker_image(image_name, output_dir, fields_file="scanner/expected_fiel
 
             # Check if Trivy returned an error
             if result.returncode != 0:
-                print(f"Trivy scan failed:\n", result.stderr)
+                print("Trivy scan failed:\n", result.stderr)
                 return None
             else:
                 print(f"Vulnerability report saved to {output_file}")
@@ -143,7 +144,7 @@ def scan_docker_image(image_name, output_dir, fields_file="scanner/expected_fiel
             missing_fields = expected - actual_fields
             if missing_fields:
                 print(f"Missing expected fields in {image_name}:")
-                report_missing_details(data, missing_fields,vuln_count)
+                report_missing_details(data, missing_fields, vuln_count)
 
             # Print the per-vulnerability completeness report
             report_missing_by_vuln(data)
@@ -151,19 +152,26 @@ def scan_docker_image(image_name, output_dir, fields_file="scanner/expected_fiel
     # Returns the full contents of the JSON for future use
     return data
 
-# Convert Trivy report into a pandas DataFrame, ordered by severity and CVSS
+# Convert Trivy report into a pandas DataFrame, ordered by severity and CVSS score
 def prepare_vulnerability_dataframe(data):
     findings = []
     image_name = data.get("ArtifactName", "unknown")
     for result in data.get("Results", []):
         for vuln in result.get("Vulnerabilities", []):
+            # extract CVSS score handling both dict (Trivy) and string (merged) formats
+            raw_cvss = vuln.get("CVSS", "")
+            if isinstance(raw_cvss, dict):
+                cvss_score = raw_cvss.get("nvd", {}).get("V3Score", "")
+            else:
+                cvss_score = raw_cvss
+
             findings.append({
                 "VulnerabilityID": vuln.get("VulnerabilityID", ""),
                 "PkgName": vuln.get("PkgName", ""),
                 "InstalledVersion": vuln.get("InstalledVersion", ""),
                 "Severity": vuln.get("Severity", ""),
                 "FixedVersion": vuln.get("FixedVersion", "-"),
-                "CVSS": vuln.get("CVSS", {}).get("nvd", {}).get("V3Score", "")
+                "CVSS": cvss_score
             })
 
     if not findings:
@@ -426,8 +434,395 @@ def report_grype_cve_package_distribution(grype_data, output_dir="outputs/scanne
 
     print(f"[Grype] CVE-package distribution report saved to: {report_path}")
 
+def compare_cve_sets(trivy_data, grype_data, image_name, output_dir="outputs/comparisons"):
+    """
+    Compare the set of CVEs detected by Trivy and Grype.
+    Save the difference.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    trivy_cves = set()
+    grype_cves = set()
+
+    # Extract Trivy CVEs
+    for result in trivy_data.get("Results", []):
+        for vuln in result.get("Vulnerabilities", []):
+            vid = vuln.get("VulnerabilityID")
+            if vid:
+                trivy_cves.add(vid)
+
+    # Extract Grype CVEs
+    for match in grype_data.get("matches", []):
+        vuln = match.get("vulnerability", {})
+        vid = vuln.get("id")
+        if vid:
+            grype_cves.add(vid)
+
+    # Compare
+    common = trivy_cves & grype_cves
+    only_trivy = trivy_cves - grype_cves
+    only_grype = grype_cves - trivy_cves
+
+    # Write to file
+    report_file = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_cve_comparison.md")
+    with open(report_file, "w", encoding="utf-8") as f:
+        f.write(f"# CVE Comparison Report for `{image_name}`\n\n")
+        f.write(f"- Total CVEs in Trivy: **{len(trivy_cves)}**\n")
+        f.write(f"- Total CVEs in Grype: **{len(grype_cves)}**\n")
+        f.write(f"- CVEs in both: **{len(common)}**\n")
+        f.write(f"- CVEs only in Trivy: **{len(only_trivy)}**\n")
+        f.write(f"- CVEs only in Grype: **{len(only_grype)}**\n\n")
+
+        if only_trivy:
+            f.write("## CVEs only in Trivy\n")
+            for cve in sorted(only_trivy):
+                f.write(f"- {cve}\n")
+            f.write("\n")
+
+        if only_grype:
+            f.write("## CVEs only in Grype\n")
+            for cve in sorted(only_grype):
+                f.write(f"- {cve}\n")
+
+    print(f" CVE comparison report saved to: {report_file}")
+
+def prepare_merged_dataframe(data):
+    """
+    Convert merged JSON (Trivy-like) into a DataFrame, including 'Sources' field.
+    """
+    findings = []
+    image_name = data.get("ArtifactName", "unknown")
+    for res in data.get("Results", []):
+        for vuln in res.get("Vulnerabilities", []):
+            raw_cvss = vuln.get("CVSS", "")
+            if isinstance(raw_cvss, dict):
+                cvss_score = raw_cvss.get("nvd", {}).get("V3Score", "")
+            else:
+                cvss_score = raw_cvss
+
+            findings.append({
+                "VulnerabilityID":       vuln.get("VulnerabilityID", ""),
+                "PkgName":               vuln.get("PkgName", ""),
+                "InstalledVersion":      vuln.get("InstalledVersion", ""),
+                "Severity":              vuln.get("Severity", ""),
+                "FixedVersion":          vuln.get("FixedVersion", "-"),
+                "CVSS":                  cvss_score,
+                "Source":                ";".join(vuln.get("Sources", []))
+            })
+
+    if not findings:
+        print("[Merged] No vulnerabilities to report.")
+        return None, image_name
+
+    df = pd.DataFrame(findings)
+
+    severity_order = {"CRITICAL":1, "HIGH":2, "MEDIUM":3, "LOW":4, "UNKNOWN":5}
+    df["SeverityRank"] = df["Severity"].str.upper().map(severity_order).fillna(6)
+    df["CVSS_Score"]   = pd.to_numeric(df["CVSS"], errors="coerce").fillna(-1)
+    df.sort_values(["SeverityRank","CVSS_Score"], ascending=[True,False], inplace=True)
+    df.drop(columns=["SeverityRank","CVSS_Score"], inplace=True)
+
+    return df, image_name
+
+def report_extra_occurrences(trivy_data, grype_data, tool_name, output_path):
+    """
+    Generate CSV of CVEs already in Trivy with extra packages found by Grype.
+    """
+    # Collect all CVE from Trivy package
+    trivy_map = defaultdict(set)
+    for r in trivy_data.get("Results", []):
+        for v in r.get("Vulnerabilities", []):
+            trivy_map[v["VulnerabilityID"]].add(v["PkgName"])
+    # For each Grype match, if the CVE is already there but the package is not, it goes in extra
+    extras = []
+    for m in grype_data.get("matches", []):
+        cve = m["vulnerability"]["id"]
+        pkg = m["artifact"]["name"]
+        if cve in trivy_map and pkg not in trivy_map[cve]:
+            extras.append((cve, pkg))
+    
+    # Let's make sure the destination directory exists
+    output_dir = os.path.dirname(output_path)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Write CSV
+    with open(output_path, "w", newline='', encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["CVE", "Pacchetto extra", "Trovato da"])
+        for cve, pkg in extras:
+            writer.writerow([cve, pkg, tool_name])
+    print(f"Extra occurrences report: {output_path}")
+
+def merge_trivy_grype(trivy_data, grype_data):
+    """
+    Combine Trivy and Grype findings into a single Python dict:
+
+    - Each Trivy finding appears once, with Sources=["Trivy"].
+    - Grype-only findings are added once, with Sources=["Grype"].
+    - Duplicate Grype matches (same CVE+package) are preserved separately, also Sources=["Grype"].
+    - Common findings get Sources=["Trivy","Grype"], filling in any missing FixedVersion or CVSS from Grype's metadata.
+    - FixedVersion is taken from the Grype vulnerability's 'fix.versions' list (if available), otherwise remains "-".
+
+    Returns:
+        dict: A Python dict in the same structure as a Trivy JSON report,
+              containing all merged vulnerabilities under ["Results"][0]["Vulnerabilities"].
+    """
+    merged = {}
+    duplicates = []
+    grype_seen = defaultdict(int)
+
+    # Loading all unique Trivy entries
+    for res in trivy_data.get("Results", []):
+        for v in res.get("Vulnerabilities", []):
+            key = (v["VulnerabilityID"], v["PkgName"])
+            entry = v.copy()
+            entry["Sources"] = ["Trivy"]
+            merged[key] = entry
+            grype_seen[key] = 0
+
+    # Scroll through all occurrences of Grype
+    for m in grype_data.get("matches", []):
+        v_g = m["vulnerability"]
+        art = m.get("artifact", {})
+        cve = v_g["id"]
+        pkg = art.get("name", "unknown")
+        installed = art.get("version", "")
+
+        # Extract FixedVersion: first m_fix if valid, otherwise first v_g_fix
+        m_fix = m.get("fix", {}).get("version")
+        if m_fix and m_fix != "-":
+            fix = m_fix
+        else:
+            vg_versions = v_g.get("fix", {}).get("versions") or []
+            fix = vg_versions[0] if vg_versions else "-"
+
+        # estrai CVSS
+        cvss = next(
+            (f.get("score")
+             for f in v_g.get("metadata", {}).get("cvss", [])
+             if f.get("score")),
+            None
+        )
+        key = (cve, pkg)
+
+        if grype_seen[key] == 0:
+            # FIRST Grype occurrence for this key
+            if key in merged:
+                # Common: update Sources and fill in missing fields
+                orig = merged[key]
+                if "Grype" not in orig["Sources"]:
+                    orig["Sources"].append("Grype")
+                if (not orig.get("FixedVersion") or orig["FixedVersion"] == "-") and fix != "-":
+                    orig["FixedVersion"] = fix
+                if (not orig.get("CVSS")) and cvss:
+                    orig["CVSS"] = cvss
+            else:
+                # ONLY Grype, first occurrence
+                merged[key] = {
+                    "VulnerabilityID":   cve,
+                    "PkgName":           pkg,
+                    "InstalledVersion":  installed,
+                    "Severity":          v_g.get("severity", ""),
+                    "FixedVersion":      fix,
+                    "CVSS":              cvss,
+                    "Sources":           ["Grype"]
+                }
+        else:
+            # DUPLICATE Grype: save with all fields
+            duplicates.append({
+                "VulnerabilityID":   cve,
+                "PkgName":           pkg,
+                "InstalledVersion":  installed,
+                "Severity":          v_g.get("severity", ""),
+                "FixedVersion":      fix,
+                "CVSS":              cvss,
+                "Sources":           ["Grype"]
+            })
+
+        grype_seen[key] += 1
+
+    # Combine unique and duplicates
+    merged_list = list(merged.values()) + duplicates
+
+    return {
+        "ArtifactName": trivy_data.get("ArtifactName", "unknown"),
+        "Results": [
+            {"Target": "Merged", "Vulnerabilities": merged_list}
+        ]
+    }
+
+def save_merged_markdown_report(df, image_name, output_dir):
+    """
+    Export the merged DataFrame to two Markdown files:
+    - flat view
+    - grouped-by-package view
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    safe_name = image_name.replace("/", "_").replace(":", "_")
+    flat_md = os.path.join(output_dir, f"{safe_name}_flat_merged.md")
+    grouped_md = os.path.join(output_dir, f"{safe_name}_by_package_merged.md")
+
+    # summary line
+    severity_counts = df["Severity"].str.upper().value_counts().to_dict()
+    total = sum(severity_counts.values())
+    order = ['CRITICAL','HIGH','MEDIUM','LOW','UNKNOWN']
+    summary = (
+        f"Total vulnerabilities: {total} "
+        f"(" + ", ".join(
+            f"{k.capitalize()}: {severity_counts.get(k,0)}"
+            for k in order if k in severity_counts
+        ) + ")"
+    )
+
+    # Flat Report
+    with open(flat_md, "w", encoding="utf-8") as f:
+        f.write(f"# Merged Vulnerability Report for `{image_name}` (Flat View)\n\n")
+        f.write(summary + "\n\n")
+        f.write(df.to_markdown(index=False))
+
+    # Grouped Report
+    with open(grouped_md, "w", encoding="utf-8") as f:
+        f.write(f"# Merged Vulnerability Report for `{image_name}` (Grouped by Package)\n\n")
+        f.write(summary + "\n\n")
+        for pkg in df["PkgName"].unique():
+            subset = df[df["PkgName"] == pkg]
+            f.write(f"## Package: `{pkg}`\n\n")
+            f.write(subset.drop(columns=["PkgName"]).to_markdown(index=False))
+            f.write("\n\n")
+
+    print(f"[Merged] Markdown reports saved to:\n  - {flat_md}\n  - {grouped_md}")
+
+def report_discrepancies_csv(trivy_df: pd.DataFrame,
+                             grype_df: pd.DataFrame,
+                             output_csv: str):
+    """
+    Compare the Severity, FixedVersion and CVSS fields of common CVEs
+    (same VulnerabilityID, PkgName, InstalledVersion),
+    and save a CSV with all discrepancies.
+    """
+    # Merge on 3 key fields
+    common = trivy_df.merge(
+        grype_df,
+        on=["VulnerabilityID", "PkgName", "InstalledVersion"],
+        how="inner",
+        suffixes=("_trivy", "_grype")
+    )
+
+    # Fields to compare
+    fields = ["Severity", "FixedVersion", "CVSS"]
+    rows = []
+
+    for field in fields:
+        tcol = field + "_trivy"
+        gcol = field + "_grype"
+        # Select only rows where both values ​​exist and are different
+        diff = common[
+            # Both non-null
+            common[tcol].notna() & common[gcol].notna() &
+            # Both non-empty string
+            (common[tcol] != "")   & (common[gcol] != "")   &
+            # Both not "-" placeholder
+            (common[tcol] != "-")  & (common[gcol] != "-")  &
+            # and different values
+            (common[tcol] != common[gcol])
+        ]
+        # for Severity, ignore case-only differences
+        if field == "Severity":
+            diff = diff[diff[f"{tcol}"].str.lower() != diff[f"{gcol}"].str.lower()]
+
+        for _, r in diff.iterrows():
+            rows.append({
+                "VulnerabilityID":   r["VulnerabilityID"],
+                "PkgName":           r["PkgName"],
+                "InstalledVersion":  r["InstalledVersion"],
+                "Field":             field,
+                "TrivyValue":        r[tcol],
+                "GrypeValue":        r[gcol],
+            })
+
+    # Save the CSV
+    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+    pd.DataFrame(rows).to_csv(output_csv, index=False)
+    print(f"Discrepancies CSV saved in: {output_csv}")
+
+
+def report_discrepancies_md(trivy_df: pd.DataFrame,
+                            grype_df: pd.DataFrame,
+                            image_name: str,
+                            output_md: str):
+    """
+    Like report_discrepancies_csv, but writes a REPORT in Markdown.
+    """
+    common = trivy_df.merge(
+        grype_df,
+        on=["VulnerabilityID", "PkgName", "InstalledVersion"],
+        how="inner",
+        suffixes=("_trivy", "_grype")
+    )
+
+    fields = ["Severity", "FixedVersion", "CVSS"]
+    rows = []
+    for field in fields:
+        tcol = field + "_trivy"
+        gcol = field + "_grype"
+        diff = common[
+            # Both non-null
+            common[tcol].notna() & common[gcol].notna() &
+            # Both non-empty string
+            (common[tcol] != "")   & (common[gcol] != "")   &
+            # Both not "-" placeholder
+            (common[tcol] != "-")  & (common[gcol] != "-")  &
+            # and different values
+            (common[tcol] != common[gcol])
+        ]
+        if field == "Severity":
+            diff = diff[diff[f"{tcol}"].str.lower() != diff[f"{gcol}"].str.lower()]
+        for _, r in diff.iterrows():
+            rows.append((r["VulnerabilityID"],
+                         r["PkgName"],
+                         r["InstalledVersion"],
+                         field,
+                         str(r[tcol]),
+                         str(r[gcol])))
+
+    # Compose the Markdown
+    total = len(rows)
+    per_field = {f: sum(1 for row in rows if row[3] == f) for f in fields}
+    summary = f"Total discrepancies: **{total}**  \n" + \
+              " | ".join(f"{f}: {per_field[f]}" for f in fields if per_field[f] > 0)
+
+    cols = ["VulnerabilityID","PkgName","InstalledVersion","Field","Trivy Value","Grype Value"]
+    # Width calculation
+    widths = {col: len(col) for col in cols}
+    for r in rows:
+        for i, cell in enumerate(r):
+            widths[cols[i]] = max(widths[cols[i]], len(cell))
+
+    # Header and separator
+    header    = "| " + " | ".join(c.ljust(widths[c]) for c in cols) + " |"
+    separator = "|-" + "-|-".join("-"*widths[c] for c in cols) + "-|"
+    lines = [header, separator]
+
+    # Body
+    for r in rows:
+        line = "| " + " | ".join(r[i].ljust(widths[cols[i]]) for i in range(len(cols))) + " |"
+        lines.append(line)
+
+    md = [
+        f"# Discrepancy Report for `{image_name}`",
+        "",
+        summary,
+        "",
+        *lines
+    ]
+
+    os.makedirs(os.path.dirname(output_md), exist_ok=True)
+    with open(output_md, "w", encoding="utf-8") as f:
+        f.write("\n".join(md))
+    print(f"Discrepancies Markdown saved in: {output_md}")
+
 if __name__ == "__main__":
     image = "vulnerables/web-dvwa"
+    image_folder = os.path.join("outputs/scanner_reports", image.replace("/", "_").replace(":", "_"))
 
     # Generate paths for each scanner
     trivy_output_dir = get_output_dir(image, "Trivy")
@@ -451,4 +846,29 @@ if __name__ == "__main__":
             save_grype_markdown_report(df_grype, sanitized_grype_image_name, output_dir=grype_output_dir)
             save_csv_report(df_grype, sanitized_grype_image_name, grype_output_dir, "grype")
             report_grype_cve_package_distribution(grype_data, output_dir=grype_output_dir, image_name=sanitized_grype_image_name)
-            
+    
+    # Compare Trivy vs Grype CVEs
+    if trivy_data and grype_data:
+        report_extra_occurrences(trivy_data, grype_data, "Grype",
+                             os.path.join(get_output_dir(image, "extras"),
+                                          f"{image}_extra_occurrences.csv"))
+        compare_cve_sets(trivy_data, grype_data, image)
+    
+    merged = merge_trivy_grype(trivy_data, grype_data)
+    df_merged, _ = prepare_merged_dataframe(merged)
+    
+    save_csv_report(df_merged, image, get_output_dir(image, "merged"), "merged")
+    save_merged_markdown_report(
+        df_merged,
+        image,
+        get_output_dir(image, "merged")
+    )
+    
+    csv_path = os.path.join(get_output_dir(image, "merged"),
+                            f"{image.replace('/', '_')}_field_discrepancies.csv")
+    md_path  = os.path.join(get_output_dir(image, "merged"),
+                            f"{image.replace('/', '_')}_field_discrepancies.md")
+
+    report_discrepancies_csv(df_trivy, df_grype, csv_path)
+    report_discrepancies_md (df_trivy, df_grype, image, md_path)
+    
