@@ -37,6 +37,31 @@ def report_missing_details(data, fields, vuln_count):
         else:
             print(f"  • {f}: missing in {len(vids)}/{vuln_count} CVEs")
 
+def get_missing_fields_by_cve(data):
+    """
+    Returns:
+        - complete_count: number of CVEs with all expected fields
+        - total_count: total number of CVEs
+        - missing_map: dict of {CVE_ID: set of missing fields}
+    """
+    all_fields = extract_vuln_fields(data)
+    missing_map = {}
+    complete_count = 0
+    total = 0
+
+    for result in data.get("Results", []):
+        for vuln in result.get("Vulnerabilities", []):
+            total += 1
+            vid = vuln.get("VulnerabilityID", "<UNKNOWN>")
+            missing = all_fields - set(vuln.keys())
+            if not missing:
+                complete_count += 1
+            else:
+                if vid not in missing_map:
+                    missing_map[vid] = missing
+
+    return complete_count, total, missing_map
+
 def report_missing_by_vuln(data):
     """
     - Print how many vulnerabilities have all possible fields (complete entries).
@@ -261,24 +286,142 @@ def report_cve_package_distribution(data, output_dir="outputs/scanner_reports", 
         columns=["CVE ID", "# Packages"]
     )
 
+    # Get the count of complete CVEs (with all expected fields), total CVEs, and a map of missing fields per CVE
+    complete, total, missing_map = get_missing_fields_by_cve(data)
+
+    # Count how many CVEs with missing fields are in each category
+    multi_with_missing  = len([cve for cve in multi_pkg_cves if cve in missing_map])
+    single_with_missing = len([cve for cve in single_pkg_cves if cve in missing_map])
+    unique_with_missing = len(missing_map)
+
+    # Helper function to compute a percentage string with 1 decimal place
+    def percent(part, whole):
+        return f"{(100 * part / whole):.1f}%" if whole else "0.0%"
+
+    # Create a summary table with total CVEs and how many are missing fields, categorized by package count
+    summary_rows = [
+        {
+        "Category": "Total unique CVEs", 
+        "Count": len(cve_map), 
+        "With missing fields": len(missing_map), 
+        "Percentage with missing fields": percent(unique_with_missing, len(cve_map))
+        },
+        {
+        "Category": "CVEs affecting more than one package", 
+        "Count": len(multi_pkg_cves), 
+        "With missing fields": multi_with_missing, 
+        "Percentage with missing fields": percent(multi_with_missing, len(multi_pkg_cves))
+        },
+        {
+        "Category": "CVEs affecting only one package", 
+        "Count": len(single_pkg_cves), 
+        "With missing fields": single_with_missing, 
+        "Percentage with missing fields": percent(single_with_missing, len(single_pkg_cves))
+        },
+    ]
+
+    # Convert summary to a DataFrame for Markdown rendering
+    df_summary_table = pd.DataFrame(summary_rows)
+
+    # Build a map of missing fields per CVE per package to detect inconsistencies
+    inconsistent_cves = defaultdict(dict)
+
+    for result in data.get("Results", []):
+        for vuln in result.get("Vulnerabilities", []):
+            cve = vuln.get("VulnerabilityID")
+            pkg = vuln.get("PkgName")
+            if not cve or not pkg:
+                continue
+            # Identify which expected fields are missing for this (CVE, package) entry
+            missing = set(m for m in missing_map.get(cve, set()) if m not in vuln)
+            inconsistent_cves[cve][pkg] = missing
+    
+    # Select CVEs that appear in multiple packages and have differing sets of missing fields (inconsistencies)
+    warnings = {
+        cve: pkgs for cve, pkgs in inconsistent_cves.items()
+        if len(pkgs) > 1 and len({frozenset(v) for v in pkgs.values()}) > 1
+    }
+
     # Write Markdown report
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(f"# CVE-to-Package Report for `{image_name}`\n\n")
 
         f.write("## Summary\n")
-        f.write(f"- Total unique CVEs: **{len(cve_map)}**\n")
-        f.write(f"- CVEs affecting more than one package: **{len(multi_pkg_cves)}**\n")
-        f.write(f"- CVEs affecting only one package: **{len(single_pkg_cves)}**\n\n")
-        f.write("---\n\n")
-
-        f.write("## CVEs affecting multiple packages (summary table)\n\n")
-        f.write(df_summary.to_markdown(index=False))
+        f.write(f"- CVEs with all expected fields: **{complete} / {total}** → **{total - complete}** have missing fields\n\n")
+        f.write(df_summary_table.to_markdown(index=False))
         f.write("\n\n---\n\n")
 
+        # Prepare lists to store multi- and single-package CVE details
+        multi_rows = []
+        single_rows = []
+        field_details = defaultdict(list)
+
+        # Build rows for CVEs affecting multiple packages, including how many packages and missing fields
+        for cve, pkgs in multi_pkg_cves.items():
+            n_missing = len(missing_map.get(cve, set()))
+            multi_rows.append({
+                "CVE ID": cve,
+                "# Packages": len(pkgs),
+                "# Missing Fields": n_missing
+            })
+            if cve in missing_map:
+                field_details[cve] = sorted(missing_map[cve])
+
+        # Same as above, but for single-package CVEs
+        for cve in single_pkg_cves:
+            n_missing = len(missing_map.get(cve, set()))
+            single_rows.append({
+                "CVE ID": cve,
+                "# Missing Fields": n_missing
+            })
+            if cve in missing_map:
+                field_details[cve] = sorted(missing_map[cve])
+
+        # Create DataFrames and sort by missing fields in descending order
+        df_multi = pd.DataFrame(multi_rows).sort_values(by="# Missing Fields", ascending=False)
+        df_single = pd.DataFrame(single_rows).sort_values(by="# Missing Fields", ascending=False)
+
+        # Write multi-package CVEs section to Markdown
+        f.write("## CVEs affecting multiple packages\n\n")
+        f.write(df_multi.to_markdown(index=False))
+        f.write("\n\n")
+
+        # Write single-package CVEs section to Markdown
+        f.write("## CVEs affecting only one package\n\n")
+        f.write(df_single.to_markdown(index=False))
+        f.write("\n\n")
+
+        # Write the list of missing fields for each single-package CVE (sorted by number of missing fields)
+        if field_details:
+            f.write("## Missing Fields (Single-package CVEs)\n\n")
+            sorted_items = sorted(
+                ((cve, sorted(missing_map[cve])) for cve in single_pkg_cves if cve in missing_map),
+                key=lambda item: len(item[1]),
+                reverse=True
+            )
+            for cve, fields in sorted_items:
+                f.write(f"- **{cve}**: {', '.join(fields)}\n")
+            f.write("\n")
+
+        # Write the detailed list of packages per CVE (only for multi-package CVEs), including missing field notes
         f.write("## Detailed package list per CVE\n\n")
         for cve, pkgs in sorted(multi_pkg_cves.items(), key=lambda x: len(x[1]), reverse=True):
             pkg_list = ", ".join(sorted(pkgs))
-            f.write(f"- **{cve}** → {len(pkgs)} packages\n  `{pkg_list}`\n\n")
+            f.write(f"- **{cve}** → {len(pkgs)} packages\n  `{pkg_list}`\n")
+            if cve in missing_map:
+                # Add note if missing fields are inconsistent across package
+                note = " ([WARNING] inconsistent across packages — see warning section)" if cve in warnings else ""
+                f.write(f"  Missing fields: {', '.join(sorted(missing_map[cve]))}{note}\n")
+            f.write("\n")
+        
+        # Write the warning section for inconsistent missing fields across packages
+        if warnings:
+            f.write("## Warnings: Inconsistent Missing Fields\n\n")
+            for cve, pkg_map in sorted(warnings.items()):
+                f.write(f"- **{cve}**\n")
+                for pkg, fields in sorted(pkg_map.items()):
+                    f.write(f"  - `{pkg}`: {sorted(fields)}\n")
+                f.write("\n")
 
     print(f"Report saved to: {report_path}")
 
