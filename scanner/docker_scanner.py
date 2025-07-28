@@ -36,7 +36,7 @@ def report_missing_details(data, fields, vuln_count):
         else:
             print(f"  • {f}: missing in {len(vids)}/{vuln_count} CVEs")
 
-def get_missing_fields_by_cve(data):
+def get_missing_fields_by_cve_trivy(data):
     """
     Returns:
         - complete_count: number of CVEs with all expected fields
@@ -73,7 +73,7 @@ def scan_docker_image(image_name, output_dir, fields_file="scanner/expected_fiel
     # Create subdirectory for this image
     image_folder_name = image_name.replace("/", "_").replace(":", "_")
 
-    data = None
+    data = None #
     print(f"[Trivy] Running scan for: {image_name}")
 
     # Construct output file name
@@ -123,7 +123,7 @@ def scan_docker_image(image_name, output_dir, fields_file="scanner/expected_fiel
     # Append any brand-new fields to the expected list and save
     new_fields = actual_fields - expected
     if new_fields:
-        print(f"New fields in {image_name}: {new_fields}")
+        print(f"[Trivy] New fields found in {image_name}: {sorted(new_fields)}")
         expected |= new_fields
         with open(fields_file, "w") as ef:
             json.dump(sorted(expected), ef, indent=2)
@@ -131,7 +131,7 @@ def scan_docker_image(image_name, output_dir, fields_file="scanner/expected_fiel
     # Show which expected fields are missing in this report
     missing_fields = expected - actual_fields
     if missing_fields:
-        print(f"Missing expected fields in {image_name}:")
+        print(f"[Trivy] Missing expected fields in {image_name}:")
         report_missing_details(data, missing_fields, vuln_count)
 
     # Returns the full contents of the JSON for future use
@@ -236,20 +236,10 @@ def report_cve_package_distribution(data, output_dir="outputs/scanner_reports", 
     multi_pkg_cves = {cve: pkgs for cve, pkgs in cve_map.items() if len(pkgs) > 1}
     single_pkg_cves = {cve for cve, pkgs in cve_map.items() if len(pkgs) == 1}
 
-    # Prepare DataFrame for summary table
-    df_summary = pd.DataFrame(
-        sorted(
-            [(cve, len(pkgs)) for cve, pkgs in multi_pkg_cves.items()],
-            key=lambda x: x[1],
-            reverse=True
-        ),
-        columns=["CVE ID", "# Packages"]
-    )
-
     # Get the count of complete CVEs (with all expected fields), total CVEs, and a map of missing fields per CVE
-    complete, total, missing_map = get_missing_fields_by_cve(data)
+    complete, total, missing_map = get_missing_fields_by_cve_trivy(data)
 
-    expected_fields = sorted(extract_vuln_fields(data))
+    #expected_fields = sorted(extract_vuln_fields(data))
 
     # Count how many CVEs with missing fields are in each category
     multi_with_missing  = len([cve for cve in multi_pkg_cves if cve in missing_map])
@@ -304,13 +294,20 @@ def report_cve_package_distribution(data, output_dir="outputs/scanner_reports", 
         if len(pkgs) > 1 and len({frozenset(v) for v in pkgs.values()}) > 1
     }
 
+    with open("scanner/expected_fields.json") as f_exp:
+        expected_fields = json.load(f_exp)
+    expected_count = len(expected_fields)
+
+
     # Write Markdown report
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(f"# Trivy CVE-to-Package Report for `{image_name}`\n\n")
 
         f.write("## Summary\n")
-        f.write(f"- CVEs with all {len(extract_vuln_fields(data))} expected fields: **{complete} / {total}** → **{total - complete}** have missing fields\n\n")
-        f.write("### Expected fields (from this report)\n\n")
+        #f.write(f"- CVEs with all {len(extract_vuln_fields(data))} expected fields: **{complete} / {total}** → **{total - complete}** have missing fields\n\n")
+        f.write(f"- CVEs with all {expected_count} expected fields: **{complete} / {total}** → **{total - complete}** have missing fields\n\n")
+        #f.write("### Expected fields (from this report)\n\n")
+        f.write("### Expected fields\n\n")
         for field in expected_fields:
             f.write(f"- `{field}`\n")
         f.write("\n")
@@ -391,16 +388,26 @@ def report_cve_package_distribution(data, output_dir="outputs/scanner_reports", 
 
     print(f"[Trivy] CVE-package distribution report saved to: {report_path}")
 
-def run_grype_scan(image_name, output_dir):
+def run_grype_scan(image_name, output_dir,fields_file="scanner/expected_fields_grype.json"):
     """
     Run a Grype vulnerability scan on the given Docker image.
     Saves the JSON output in the same directory as Trivy reports.
     Returns the parsed JSON dictionary or None on failure.
     """
-    grype_output_file = os.path.join(
-        output_dir, image_name.replace("/", "_").replace(":", "_") + "_grype.json"
-    )
+    if not shutil.which("grype"):
+        print("Error: Grype is not installed or is not in PATH")
+        return None
+    
+    # Creating output directory
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Create subdirectory for this image
+    image_folder_name = image_name.replace("/", "_").replace(":", "_")
+
     print(f"[Grype] Running scan for: {image_name}")
+
+    # Construct output file name
+    grype_output_file = os.path.join(output_dir, f"{image_folder_name}_grype.json")
 
     # Execute the Grype command
     result = subprocess.run([
@@ -410,17 +417,56 @@ def run_grype_scan(image_name, output_dir):
     ], capture_output=True, text=True)
 
     if result.returncode != 0:
-        print(f"Grype scan failed:\n{result.stderr}")
+        print(f"[Grype] scan failed:\n{result.stderr}")
         return None
+    else:
+        print(f"[Grype] Vulnerability report saved to: {grype_output_file}")
 
-    print(f"[Grype] Vulnerability report saved to: {grype_output_file}")
-
+    # Try to read and process the JSON
     try:
         with open(grype_output_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception as e:
         print(f"Failed to parse Grype JSON: {e}")
         return None
+    
+    # Count vulnerabilities
+    vuln_count = len(data.get("matches", []))
+    if vuln_count == 0:
+        return data
+    
+    # Extract all fields from matches
+    actual_fields = set()
+    for match in data.get("matches", []):
+        actual_fields.update(match.get("vulnerability", {}).keys())
+        actual_fields.update(match.get("artifact", {}).keys())
+            
+    # Load expected fields if they exist
+    if os.path.exists(fields_file):
+        with open(fields_file) as ef:
+            expected = set(json.load(ef))
+    else:
+        expected = set()
+            
+    # Check and update expected fields
+    new_fields = actual_fields - expected
+    if new_fields:
+        print(f"[Grype] New fields found in {image_name}: {sorted(new_fields)}")
+        expected |= new_fields
+        with open(fields_file, "w") as ef:
+            json.dump(sorted(expected), ef, indent=2)        
+            
+    # Show missing expected fields
+    missing_fields = expected - actual_fields
+    if missing_fields:
+        print(f"[Grype] Missing expected fields in {image_name}:")
+        complete, total, missing_map = get_missing_fields_by_cve_grype(data)
+        # Wrap Grype matches into fake-Trivy structure so we can reuse report_missing_details()
+        report_missing_details(data={"matches": data.get("matches", [])},
+                               fields=missing_fields,
+                               vuln_count=total)
+            
+    return data
 
 # Convert Grype JSON scan results into a pandas DataFrame
 def prepare_grype_dataframe(grype_data):
@@ -516,6 +562,9 @@ def get_missing_fields_by_cve_grype(data):
     """
     Identify missing expected fields per CVE in Grype results.
     """
+    # Extract all possible fields from both "vulnerability" and "artifact"
+    # Unlike Trivy (which only has vulnerability data), Grype separates CVE and package info.
+    # To assess field completeness properly, we consider both.
     all_fields = set()
     for match in data.get("matches", []):
         vuln = match.get("vulnerability", {})
@@ -573,31 +622,6 @@ def report_grype_cve_package_distribution(grype_data, output_dir="outputs/scanne
             if cve not in missing_map:
                 missing_map[cve] = set()
             missing_map[cve] |= missing
-    
-    # Save Grype expected fields to JSON
-    expected_fields_file = "scanner/expected_fields_grype.json"
-    # Load expected fields (if they exist), otherwise initialize as empty
-    if os.path.exists(expected_fields_file):
-        with open(expected_fields_file, "r") as f:
-            expected_fields = set(json.load(f))
-    else:
-        expected_fields = set()
-
-    # Add new fields found in this scan
-    new_fields = all_fields - expected_fields
-    if new_fields:
-        print(f"[Grype] New fields found: {sorted(new_fields)}")
-        expected_fields |= new_fields
-        with open(expected_fields_file, "w") as f:
-            json.dump(sorted(expected_fields), f, indent=2)
-
-    # Check if any expected fields are missing in the current report
-    missing_expected = expected_fields - all_fields
-    if missing_expected:
-        print(f"[Grype] Missing expected fields in this scan:")
-        for field in sorted(missing_expected):
-            print(f"  - {field}")
-
 
     for match in grype_data.get("matches", []):
         vuln = match.get("vulnerability", {})
@@ -666,15 +690,6 @@ def report_grype_cve_package_distribution(grype_data, output_dir="outputs/scanne
         if cve in missing_map:
             field_details[cve] = sorted(missing_map[cve])
 
-    """df_summary = pd.DataFrame(
-        sorted(
-            [(cve, len(pkgs)) for cve, pkgs in multi_pkg_cves.items()],
-            key=lambda x: x[1],
-            reverse=True
-        ),
-        columns=["CVE ID", "# Packages"]
-    )"""
-
     df_multi = pd.DataFrame(multi_rows).sort_values(by="# Missing Fields", ascending=False)
     df_single = pd.DataFrame(single_rows).sort_values(by="# Missing Fields", ascending=False)
     
@@ -694,22 +709,25 @@ def report_grype_cve_package_distribution(grype_data, output_dir="outputs/scanne
         if len(pkgs) > 1 and len({frozenset(v) for v in pkgs.values()}) > 1
     }
 
+    with open("scanner/expected_fields_grype.json") as f_exp:
+        expected_fields = json.load(f_exp)
+    expected_count = len(expected_fields)
+
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(f"# Grype CVE-to-Package Report for `{image_name}`\n\n")
 
         f.write("## Summary\n")
-        f.write(f"- CVEs with all {len(all_fields)} expected fields: **{complete} / {total}** → **{total - complete}** have missing fields\n\n")
-        f.write("### Expected fields (from this report)\n\n")
-        for field in all_fields:
+        #f.write(f"- CVEs with all {len(all_fields)} expected fields: **{complete} / {total}** → **{total - complete}** have missing fields\n\n")
+        f.write(f"- CVEs with all {expected_count} expected fields: **{complete} / {total}** → **{total - complete}** have missing fields\n\n")
+        #f.write("### Expected fields (from this report)\n\n")
+        f.write("### Expected fields\n\n")
+        """for field in all_fields:
+            f.write(f"- `{field}`\n")"""
+        for field in expected_fields:
             f.write(f"- `{field}`\n")
         f.write("\n")
-        """f.write(f"- Total unique CVEs: **{len(cve_map)}**\n")
-        f.write(f"- CVEs affecting more than one package: **{len(multi_pkg_cves)}**\n")
-        f.write(f"- CVEs affecting only one package: **{len(single_pkg_cves)}**\n\n")
-        f.write("---\n\n")"""
 
         f.write("## CVEs affecting multiple packages (summary table)\n\n")
-        #f.write(df_summary.to_markdown(index=False))
         f.write(df_summary_table.to_markdown(index=False))
         f.write("\n\n---\n\n")
 
