@@ -192,14 +192,14 @@ def save_markdown_report(df, image_name, output_dir):
 
     # Flat report
     with open(flat_name, "w", encoding="utf-8") as f:
-        f.write(f"# Vulnerability Report for `{image_name}` (Flat View)\n\n")
+        f.write(f"# Trivy Vulnerability Report for `{image_name}` (Flat View)\n\n")
         f.write(summary_line + "\n\n")
         f.write(f"- Empty fields: **{empty_fields}**\n\n")
         f.write(df.to_markdown(index=False))
     
     # Grouped report
     with open(grouped_name, "w", encoding="utf-8") as f:
-        f.write(f"# Vulnerability Report for `{image_name}` (Grouped by Package)\n\n")
+        f.write(f"# Trivy Vulnerability Report for `{image_name}` (Grouped by Package)\n\n")
         f.write(summary_line + "\n\n")
         f.write(f"- Empty fields: **{empty_fields}**\n\n")
         for pkg in df["PkgName"].unique():
@@ -297,7 +297,6 @@ def report_cve_package_distribution(data, output_dir="outputs/scanner_reports", 
     with open("scanner/expected_fields.json") as f_exp:
         expected_fields = json.load(f_exp)
     expected_count = len(expected_fields)
-
 
     # Write Markdown report
     with open(report_path, "w", encoding="utf-8") as f:
@@ -417,7 +416,7 @@ def run_grype_scan(image_name, output_dir,fields_file="scanner/expected_fields_g
     ], capture_output=True, text=True)
 
     if result.returncode != 0:
-        print(f"[Grype] scan failed:\n{result.stderr}")
+        print(f"[Grype] Scan failed:\n{result.stderr}")
         return None
     else:
         print(f"[Grype] Vulnerability report saved to: {grype_output_file}")
@@ -769,12 +768,11 @@ def report_grype_cve_package_distribution(grype_data, output_dir="outputs/scanne
 
     print(f"[Grype] CVE-package distribution report saved to: {report_path}")
 
-def compare_cve_sets(trivy_data, grype_data, image_name, output_dir="outputs/comparisons"):
+def compare_cve_sets(trivy_data, grype_data, image_name):
     """
     Compare the set of CVEs detected by Trivy and Grype.
     Save the difference.
     """
-    os.makedirs(output_dir, exist_ok=True)
     trivy_cves = set()
     grype_cves = set()
 
@@ -797,15 +795,22 @@ def compare_cve_sets(trivy_data, grype_data, image_name, output_dir="outputs/com
     only_trivy = trivy_cves - grype_cves
     only_grype = grype_cves - trivy_cves
 
+    # Prepare summary data as a DataFrame
+    df_summary = pd.DataFrame([
+        {"Category": "Total CVEs in Trivy", "Count": len(trivy_cves)},
+        {"Category": "Total CVEs in Grype", "Count": len(grype_cves)},
+        {"Category": "CVEs in both", "Count": len(common)},
+        {"Category": "Only in Trivy", "Count": len(only_trivy)},
+        {"Category": "Only in Grype", "Count": len(only_grype)}
+    ])
+
     # Write to file
-    report_file = os.path.join(output_dir, f"{image_name.replace('/', '_').replace(':', '_')}_cve_comparison.md")
+    report_file = os.path.join(get_output_dir(image_name, "Merged"), f"{image_name.replace('/', '_').replace(':', '_')}_cve_comparison.md")
     with open(report_file, "w", encoding="utf-8") as f:
         f.write(f"# CVE Comparison Report for `{image_name}`\n\n")
-        f.write(f"- Total CVEs in Trivy: **{len(trivy_cves)}**\n")
-        f.write(f"- Total CVEs in Grype: **{len(grype_cves)}**\n")
-        f.write(f"- CVEs in both: **{len(common)}**\n")
-        f.write(f"- CVEs only in Trivy: **{len(only_trivy)}**\n")
-        f.write(f"- CVEs only in Grype: **{len(only_grype)}**\n\n")
+        f.write("## Summary\n\n")
+        f.write(df_summary.to_markdown(index=False))
+        f.write("\n\n")
 
         if only_trivy:
             f.write("## CVEs only in Trivy\n")
@@ -818,7 +823,7 @@ def compare_cve_sets(trivy_data, grype_data, image_name, output_dir="outputs/com
             for cve in sorted(only_grype):
                 f.write(f"- {cve}\n")
 
-    print(f" CVE comparison report saved to: {report_file}")
+    print(f"[Merged] CVE comparison report saved to: {report_file}")
 
 def prepare_merged_dataframe(data):
     """
@@ -858,7 +863,7 @@ def prepare_merged_dataframe(data):
 
     return df, image_name
 
-def report_extra_occurrences(trivy_data, grype_data, tool_name, output_path):
+def report_extra_occurrences(trivy_data, grype_data, tool_name):
     """
     Generate CSV of CVEs already in Trivy with extra packages found by Grype.
     """
@@ -874,18 +879,24 @@ def report_extra_occurrences(trivy_data, grype_data, tool_name, output_path):
         pkg = m["artifact"]["name"]
         if cve in trivy_map and pkg not in trivy_map[cve]:
             extras.append((cve, pkg))
-    
+
+    if not extras:
+        print(f"[Merged] No extra package occurrences from {tool_name}.")
+        return
+
     # Let's make sure the destination directory exists
-    output_dir = os.path.dirname(output_path)
-    os.makedirs(output_dir, exist_ok=True)
-    
+    merged_dir = get_output_dir(image_name, "Merged")
+    os.makedirs(merged_dir, exist_ok=True)
+    safe_image = image_name.replace("/", "_").replace(":", "_")
+    csv_path = os.path.join(merged_dir, f"{safe_image}_extra_occurrences.csv")
+
     # Write CSV
-    with open(output_path, "w", newline='', encoding="utf-8") as f:
+    with open(csv_path, "w", newline='', encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["CVE", "Pacchetto extra", "Trovato da"])
+        writer.writerow(["CVE", "Extra Package", "Found by"])
         for cve, pkg in extras:
             writer.writerow([cve, pkg, tool_name])
-    print(f"Extra occurrences report: {output_path}")
+    print(f"[Merged] Extra package occurrences report from {tool_name} saved to: {csv_path}")
 
 def merge_trivy_grype(trivy_data, grype_data):
     """
@@ -1085,7 +1096,7 @@ def report_discrepancies_csv(trivy_df: pd.DataFrame,
     # Save the CSV
     os.makedirs(os.path.dirname(output_csv), exist_ok=True)
     pd.DataFrame(rows).to_csv(output_csv, index=False)
-    print(f"Discrepancies CSV saved in: {output_csv}")
+    print(f"[Discrepancies] CSV saved to: {output_csv}")
 
 def report_discrepancies_md(trivy_df: pd.DataFrame,
                             grype_df: pd.DataFrame,
@@ -1160,7 +1171,7 @@ def report_discrepancies_md(trivy_df: pd.DataFrame,
     os.makedirs(os.path.dirname(output_md), exist_ok=True)
     with open(output_md, "w", encoding="utf-8") as f:
         f.write("\n".join(md))
-    print(f"Discrepancies Markdown saved in: {output_md}")
+    print(f"[Discrepancies] Markdown saved to: {output_md}")
 
 def report_improvements(orig_df, merged_df, fields, tool_name, image_name, output_md):
     """
@@ -1177,7 +1188,7 @@ def report_improvements(orig_df, merged_df, fields, tool_name, image_name, outpu
     )
 
     # Prepare rows for the summary table
-    rows = []
+    summary_rows = []
     for f in fields:
         orig_col   = f
         merged_col = f + "_merged"
@@ -1189,52 +1200,62 @@ def report_improvements(orig_df, merged_df, fields, tool_name, image_name, outpu
         tot_fill   = int((missing & filled).sum())
         # Compute improvement percentage
         pct        = f"{tot_fill/ tot_miss*100:.1f}%" if tot_miss>0 else "N/A"
-        rows.append({
+        summary_rows.append({
             "Field":               f,
             f"Missing in only–{tool_name}": tot_miss,
             "Filled in merged":    tot_fill,
             "Improvement %":       pct
         })
 
-    # Calculate column widths for Markdown formatting
-    cols   = list(rows[0].keys()) if rows else []
-    widths = {c: len(c) for c in cols}
-    for r in rows:
-        for c in cols:
-            widths[c] = max(widths[c], len(str(r[c])))
-
-    # Construct Markdown table header, separator, and body
-    header    = "| " + " | ".join(c.ljust(widths[c]) for c in cols) + " |"
-    separator = "|-" + "-|-".join("-" * widths[c] for c in cols) + "-|"
-    body      = [
-        "| " + " | ".join(str(r[c]).ljust(widths[c]) for c in cols) + " |"
-        for r in rows
-    ]
-
-    # Markdown content
-    md = [
-        f"# Improvement Report: {tool_name} → Merged for `{image_name}`",
-        "",
-        f"This table shows how many missing fields in only–{tool_name} were filled in the merged report:\n",
-        header, separator,
-        *body,
-        ""
-    ]
+    df_summary = pd.DataFrame(summary_rows)
 
     # Identify and list CVEs that had missing fields in the original only–tool report
     missing_details = defaultdict(list)
     for idx, row in common.iterrows():
         vid = row["VulnerabilityID"]
         pkg = row["PkgName"]
+        ver = row["InstalledVersion"]
         # Determine which fields were missing originally
         mfields = [f for f in fields if pd.isna(row[f]) or row[f] == "" or row[f] == "-"]
         if mfields:
-            missing_details[(vid, pkg)] = mfields
-    
+            missing_details[(vid, pkg, ver)] = mfields
+
+    # Markdown content
+    md = [
+        f"# Improvement Report: {tool_name} → Merged for `{image_name}`",
+        "",
+        f"This table shows how many missing fields in only–{tool_name} were filled in the merged report:",
+        "",
+        df_summary.to_markdown(index=False),
+        ""
+    ]
+
     if missing_details:
-        md.append("## CVEs with missing fields in only–{tool_name}")
-        for (vid, pkg), mfields in missing_details.items():
-            md.append(f"- **{vid}** (`{pkg}`): {', '.join(mfields)}")
+        md.append("---\n")
+        md.append(f"## CVEs with missing fields in only–{tool_name}")
+        for (vid, pkg, ver), mfields in missing_details.items():
+            # Print the CVE and affected package/version
+            md.append(f"- **{vid}** (`{pkg}` v{ver})")
+            # List all fields that were missing in the original report (Trivy or Grype)
+            md.append(f"  - Missing fields: {', '.join(mfields)}")
+            # Check which of those fields were filled in the merged report
+            improved_fields = []
+            for f in mfields:
+                # Locate the corresponding row in the merged DataFrame
+                merged_val = common.loc[
+                    (common["VulnerabilityID"] == vid) &
+                    (common["PkgName"] == pkg) &
+                    (common["InstalledVersion"] == ver),
+                    f + "_merged"
+                ]
+                # If the value exists and is meaningful, consider it an improvement
+                if not merged_val.empty:
+                        val = merged_val.values[0]
+                        if val and val != "-":
+                            improved_fields.append(f"{f} → {val}")
+            # If any fields were actually filled, add them to the markdown
+            if improved_fields:
+                md.append(f"  - Filled in merged: {', '.join(improved_fields)}")
         md.append("")
 
     # Write the Markdown content to the output file
@@ -1242,7 +1263,7 @@ def report_improvements(orig_df, merged_df, fields, tool_name, image_name, outpu
     with open(output_md, "w", encoding="utf-8") as f:
         f.write("\n".join(md))
 
-    print(f"Improvement report saved in: {output_md}")
+    print(f"[Improvement - {tool_name.capitalize()}] report saved to: {output_md}")
 
 if __name__ == "__main__":
     image = "vulnerables/web-dvwa"
@@ -1271,32 +1292,31 @@ if __name__ == "__main__":
             save_csv_report(df_grype, sanitized_grype_image_name, grype_output_dir, "grype")
             report_grype_cve_package_distribution(grype_data, output_dir=grype_output_dir, image_name=sanitized_grype_image_name)
     
-    # Compare Trivy vs Grype CVEs
-    if trivy_data and grype_data:
-        report_extra_occurrences(trivy_data, grype_data, "Grype",
-                             os.path.join(get_output_dir(image, "extras"),
-                                          f"{image}_extra_occurrences.csv"))
-        compare_cve_sets(trivy_data, grype_data, image)
-    
+    print(f"[Merged] Performing merge and generating merged reports for: {image_name}")
     merged = merge_trivy_grype(trivy_data, grype_data)
     df_merged, _ = prepare_merged_dataframe(merged)
     
-    save_csv_report(df_merged, image, get_output_dir(image, "merged"), "merged")
     save_merged_markdown_report(
         df_merged,
         image,
-        get_output_dir(image, "merged")
+        get_output_dir(image, "Merged")
     )
+    save_csv_report(df_merged, image, get_output_dir(image, "Merged"), "merged")
     
-    csv_path = os.path.join(get_output_dir(image, "merged"),
+    # Compare Trivy vs Grype CVEs
+    if trivy_data and grype_data:
+        report_extra_occurrences(trivy_data, grype_data, "Grype")
+        compare_cve_sets(trivy_data, grype_data, image)
+
+    csv_path = os.path.join(get_output_dir(image, "Merged"),
                             f"{image.replace('/', '_')}_field_discrepancies.csv")
-    md_path  = os.path.join(get_output_dir(image, "merged"),
+    md_path  = os.path.join(get_output_dir(image, "Merged"),
                             f"{image.replace('/', '_')}_field_discrepancies.md")
 
     report_discrepancies_csv(df_trivy, df_grype, csv_path)
     report_discrepancies_md (df_trivy, df_grype, image, md_path)
 
-    merged_dir = get_output_dir(image, "merged")
+    merged_dir = get_output_dir(image, "Merged")
 
     report_improvements(
         orig_df=   df_trivy,
