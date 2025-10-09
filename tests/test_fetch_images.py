@@ -12,3 +12,9 @@ if __name__ == "__main__":
 
     print("\n=== Fetching vulnerables/web-dvwa ===")
     fetch_image("vulnerables/web-dvwa", safe_mode=True)
+
+    print("\n=== Fetching centos:7 ===")
+    fetch_image("centos:7", safe_mode=False)
+
+    print("\n=== Fetching php:8.1-fpm ===")
+    fetch_image("php:8.1-fpm", safe_mode=False)

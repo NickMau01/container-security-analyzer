@@ -7,7 +7,9 @@ if __name__ == "__main__":
         "nginx:latest",
         "python:3.13-alpine",
         "alpine:3.16",
-        "vulnerables/web-dvwa"
+        "vulnerables/web-dvwa",
+        "centos:7",
+        "php:8.1-fpm"
     ]
 
     os.makedirs("outputs/scanner_reports", exist_ok=True)
