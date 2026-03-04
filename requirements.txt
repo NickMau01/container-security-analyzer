@@ -1,3 +1,5 @@
-docker
 pandas
 tabulate
+jinja2
+markupsafe
+pyyaml
