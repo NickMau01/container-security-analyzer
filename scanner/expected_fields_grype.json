@@ -1,0 +1,23 @@
+[
+  "advisories",
+  "cpes",
+  "cvss",
+  "dataSource",
+  "description",
+  "epss",
+  "fix",
+  "id",
+  "knownExploited",
+  "language",
+  "licenses",
+  "locations",
+  "name",
+  "namespace",
+  "purl",
+  "risk",
+  "severity",
+  "type",
+  "upstreams",
+  "urls",
+  "version"
+]
